@@ -1,9 +1,40 @@
 @Grab('com.github.albaker:GroovySparql:0.9.0')
-@Grab("org.twitter4j:twitter4j-core:3.0.5")
-import twitter4j.Twitter;
-import twitter4j.TwitterFactory;
+@Grab("org.twitter4j:twitter4j-core:4.0.4")
+import twitter4j.*
+import twitter4j.auth.*
 import groovy.sparql.*
 
+private static AccessToken loadAccessToken(int useId){
+  def lines = 0
+  String token = null
+  String tokenSecret = null
+  new File("twittersecrets.txt").eachLine { line ->
+    if (lines == 0) {
+    } else if (lines == 1) {
+      token = line
+    } else if (lines == 2) {
+      tokenSecret = line
+    }
+    lines += 1
+  }
+  return new AccessToken(token, tokenSecret);
+}
+
+def ckey = null
+def cpass = null
+new File("consumersecrets.txt").eachLine { line, num ->
+  if (num == 1) {
+    ckey = line
+  } else if (num == 2) {
+    cpass = line
+  }
+}
+
+TwitterFactory factory = new TwitterFactory();
+AccessToken accessToken = loadAccessToken(0)
+twitter = factory.getInstance()
+twitter.setOAuthConsumer(ckey, cpass)
+twitter.setOAuthAccessToken(accessToken)
 
 word2syl = [:]
 new File("epw.cd").splitEachLine("\\\\") { line ->
@@ -51,9 +82,44 @@ def isCandidate(List l) {
     counter += 1
   }
   if (syllnum > 5) { return false }
-  if (syllnum == 5) {
-    println "Haiku found: $l"
-    System.exit(0)
+  if (syllnum == 5 && counter == syll.size()) {
+    def haikustring = ""
+    println "=========================================================================="
+    //    println "Haiku found:"
+    counter = 0
+    syllnum = 0
+    while (syllnum < 5) {
+      print l[counter]+" "
+      haikustring += (l[counter]+" ")
+      syllnum += syll[counter]
+      counter += 1
+    }
+    println ""
+    haikustring+= "\n"
+    syllnum = 0
+    while (syllnum < 7) {
+      print l[counter]+" "
+      haikustring += (l[counter]+" ")
+      syllnum += syll[counter]
+      counter += 1
+    }
+    println ""
+    haikustring+= "\n"
+    syllnum = 0
+    while (syllnum < 5) {
+      print l[counter]+" "
+      haikustring += (l[counter]+" ")
+      syllnum += syll[counter]
+      counter += 1
+    }
+    println "\n==========================================================================\n"
+    try {
+      def newstatus = twitter.updateStatus("$haikustring\n#biohack16")
+      System.out.println("Successfully updated the status to [" + newstatus.getText() + "].");
+      sleep(1000*60*10) // wait 10 minutes
+    } catch (Exception E) {
+      println E.getMessage()
+    }
   }
 }
 
@@ -63,52 +129,66 @@ def line2 = []
 def line3 = []
 
 //def sparql = new Sparql(endpoint:"http://dbpedia.org/sparql")
-def sparql = new Sparql(endpoint:"http://bio2rdf.org/sparql")
-
+//def sparql = new Sparql(endpoint:"http://bio2rdf.org/sparql")
+//def sparql = new Sparql(endpoint:"http://rdf.disgenet.org/sparql/")
+def sparql = new Sparql(endpoint:"http://sparql.uniprot.org/sparql/")
+//def sparql = new Sparql(endpoint:"http://data.linkedmdb.org/sparql")
+//def sparql = new Sparql(endpoint:"https://query.wikidata.org/")
 // find some resources with labels
+//SELECT ?resource ?lab FROM <http://bio2rdf.org/bioportal_resource:bio2rdf.dataset.bioportal.R3> WHERE { 
 def query = """
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 
-SELECT ?resource ?lab FROM <http://bio2rdf.org/bioportal_resource:bio2rdf.dataset.bioportal.R3> WHERE { 
+SELECT ?resource ?lab WHERE { 
 ?resource rdfs:label ?lab .
 FILTER(LANG(?lab) = "" || LANGMATCHES(LANG(?lab), "en"))
-} ORDER BY RAND() LIMIT 10000
+} LIMIT 100000
 """
 
 def candidates = [:]
 // sparql result variables projected into the closure delegate
 sparql.each query, {
-  def words = lab.tokenize(" ")
+  def words = lab.toLowerCase().tokenize(" ")
   if (isCandidate(words)) {
     candidates[resource] = words
   }
 }
-
-candidates.keySet().each { k ->
+def randlist = candidates.keySet().toList()
+Collections.shuffle(randlist)
+randlist.each { k ->
   def words = candidates[k]
   query = """
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 
-SELECT ?p ?labp ?o ?labo FROM <http://bio2rdf.org/bioportal_resource:bio2rdf.dataset.bioportal.R3> WHERE { 
+SELECT ?p ?labp ?o ?labo WHERE { 
 <$k> ?p ?o .
 ?o rdfs:label ?labo .
 OPTIONAL {
 ?p rdfs:label ?labp .
 }
 FILTER(LANG(?labo) = "" || LANGMATCHES(LANG(?labo), "en"))
-} ORDER BY RAND() LIMIT 1000
+} LIMIT 1000
 """
   sparql.each query, {
     def plabel = null
     if (labp == null) {
-      plabel = p.substring(p.indexOf("#")+1)?.toLowerCase()
+      plabel = p.substring(p.lastIndexOf("#")+1)
+      plabel = plabel.substring(plabel.lastIndexOf("/")+1)
+      def tok = ""
+      plabel.split("(?<!(^|[A-Z]))(?=[A-Z])|(?<!^)(?=[A-Z][a-z])").each {
+	tok = tok + it.toLowerCase() + " "
+      }
+      plabel = tok.trim()
       if (plabel == "subclassof") {
 	plabel = "subclass of"
       }
+    } else {
+      plabel = labp?.toLowerCase()
     }
-    words = words + "$plabel $labo".toLowerCase().tokenize(" ")
-    if (isCandidate(words)) {
-      println words
+    def nwords = words + "$plabel $labo".toLowerCase().tokenize(" ")
+    if (isCandidate(nwords)) {
+      println nwords
+      //      println k
     }
   }
 }
